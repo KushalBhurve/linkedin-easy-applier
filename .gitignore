@@ -1,0 +1,40 @@
+﻿# Browser session & profile (contains LinkedIn cookies and login credentials)
+.browser_profile/
+
+# Python cache & build
+__pycache__/
+*.py[cod]
+*.class
+*.so
+
+# Environments & secrets
+.env
+*.env
+.env.*
+venv/
+.venv/
+env/
+
+# Application database & storage
+applications.db
+*.db
+*.sqlite
+*.sqlite3
+
+# Application artifacts & screenshots
+results/*
+!results/.gitkeep
+
+# Resumes (personal PDF resumes should never be committed)
+*.pdf
+*.PDF
+Resume.pdf
+resume.pdf
+!resume_sample.pdf
+
+# IDE & OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.log
