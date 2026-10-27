@@ -484,7 +484,13 @@ class EasyApplyFormFiller:
             if any(term in q_text.lower() for term in ["city", "location (city)", "current location"]):
                 continue
 
-            is_numeric = (inp.get_attribute("type") == "number") or ("years" in q_text.lower())
+            itype = (inp.get_attribute("type") or "").lower()
+            imode = (inp.get_attribute("inputmode") or "").lower()
+            is_numeric = (
+                itype in ["number", "tel"] or
+                imode in ["numeric", "decimal"] or
+                any(term in q_text.lower() for term in ["years", "number of", "in days", "(days)", "how many days"])
+            )
             ans = self._resolve_text_input(q_text, is_numeric=is_numeric, inp=inp)
             if ans:
                 self.browser_mgr.human_type(inp, str(ans))
@@ -702,13 +708,26 @@ class EasyApplyFormFiller:
                     }""", {"f_name": f_name, "target_val": target_val, "is_expected": is_expected})
 
                 # 3. Required numeric field (e.g. "Please enter a valid number")
-                elif any(term in msg for term in ["number", "digit", "decimal", "whole number"]):
+                elif any(term in msg for term in ["number", "digit", "decimal", "whole number", "valid number"]):
                     console.print(f"  [cyan]🔧 Auto-resolving numeric input error...[/cyan]")
                     self.page.evaluate("""() => {
                         const invalids = Array.from(document.querySelectorAll("input[aria-invalid='true'], input[type='number']"));
                         for (const inp of invalids) {
-                            if (!inp.value || inp.value === '0') {
-                                inp.value = '2';
+                            const cur = (inp.value || '').trim();
+                            const isNaNVal = isNaN(Number(cur)) || cur === '' || cur === '0';
+                            if (isNaNVal) {
+                                let label = '';
+                                let p = inp.parentElement;
+                                while (p && p.tagName !== 'BODY') {
+                                    const lbl = p.querySelector('label');
+                                    if (lbl) { label = (lbl.innerText || '').toLowerCase(); break; }
+                                    p = p.parentElement;
+                                }
+                                if (label.includes('notice') || label.includes('join') || label.includes('day') || label.includes('start')) {
+                                    inp.value = '60';
+                                } else {
+                                    inp.value = '2';
+                                }
                                 inp.dispatchEvent(new Event('input', { bubbles: true }));
                                 inp.dispatchEvent(new Event('change', { bubbles: true }));
                             }
@@ -754,9 +773,35 @@ class EasyApplyFormFiller:
     def _resolve_radio_choice(self, question: str, options: List[str]) -> Optional[str]:
         q = question.lower()
 
-        # Interview / Availability
-        if any(term in q for term in ["interview", "face-to-face", "onsite interview", "available for", "immediate"]):
+        # Interview / Face-to-Face Availability
+        if any(term in q for term in ["interview", "face-to-face", "onsite interview"]):
             return self._match_option(["yes"], options) or "Yes"
+
+        # Notice Period / Availability to Join Radio
+        if any(term in q for term in ["notice period", "join us", "can you join", "how soon", "when can you start", "availability to join", "earliest start date", "start date", "joining date", "time required to join"]):
+            # If asking if available immediately or within 15/30 days:
+            if any(term in q for term in ["immediate", "within 15", "within 30", "0-15", "0-30", "immediately"]):
+                no_opt = self._match_option(["no", "not available", "false"], options)
+                if no_opt:
+                    return no_opt
+
+            days = self.screening_cfg.notice_period_days
+            months = days // 30
+            candidates = [
+                str(days),
+                f"{days} days",
+                f"{days} day",
+                f"{months} month" if months == 1 else f"{months} months",
+                "30-60 days",
+                "60-90 days",
+                "60+ days",
+                "more than 30 days",
+                "2 months",
+                self.screening_cfg.notice_period_text,
+            ]
+            matched = self._match_option(candidates, options)
+            if matched:
+                return matched
 
         # Work authorization
         if any(term in q for term in ["authorized to work", "legally authorized", "eligible to work", "work in india"]):
@@ -802,7 +847,8 @@ class EasyApplyFormFiller:
             field_type="choice",
             options=options,
             candidate=self.cand,
-            ai_config=self.ai_cfg
+            ai_config=self.ai_cfg,
+            screening_answers=self.screening_cfg
         )
         return self._match_option([ans.lower()], options)
 
@@ -859,8 +905,12 @@ class EasyApplyFormFiller:
         if any(term in q for term in ["education", "degree"]):
             return self._match_option(["bachelor", "undergraduate", "degree", "b.e", "b.tech"], options) or options[0]
 
-        # Notice Period
-        if "notice period" in q:
+        # Notice Period / Availability to Join
+        if any(term in q for term in ["notice period", "join us", "can you join", "how soon", "when can you start", "availability to join", "earliest start date", "start date", "joining date", "time required to join"]):
+            if any(term in q for term in ["immediate", "within 15", "within 30", "0-15", "0-30", "immediately"]):
+                no_opt = self._match_option(["no", "not available"], options)
+                if no_opt:
+                    return no_opt
             days = self.screening_cfg.notice_period_days
             months = days // 30
             candidates = [
@@ -868,9 +918,16 @@ class EasyApplyFormFiller:
                 f"{days} days",
                 f"{days} day",
                 f"{months} month" if months == 1 else f"{months} months",
+                "30-60 days",
+                "60-90 days",
+                "60+ days",
+                "more than 30 days",
+                "2 months",
                 self.screening_cfg.notice_period_text,
             ]
-            return self._match_option(candidates, options) or options[0]
+            matched = self._match_option(candidates, options)
+            if matched:
+                return matched
 
         # English proficiency
         if "english" in q or "proficiency" in q:
@@ -895,7 +952,8 @@ class EasyApplyFormFiller:
             field_type="choice",
             options=options,
             candidate=self.cand,
-            ai_config=self.ai_cfg
+            ai_config=self.ai_cfg,
+            screening_answers=self.screening_cfg
         )
         return self._match_option([ans.lower()], options) or options[0]
 
@@ -1080,9 +1138,26 @@ class EasyApplyFormFiller:
             ovr = self.cand.overall_experience_years
             return str(int(ovr) if ovr.is_integer() else ovr)
 
-        # 2. Notice period (use numeric digits e.g. '60' or '30' to pass digit validations)
-        if "notice period" in q:
-            return str(self.screening_cfg.notice_period_days)
+        # 2. Notice period & Availability to join
+        # (use numeric digits e.g. '60' when field is numeric or asks for days)
+        if any(term in q for term in [
+            "notice period", "join us", "can you join", "soon can you join", "days to join",
+            "when can you start", "soon can you start", "availability to join", "earliest start date",
+            "start date", "joining date", "time required to join", "notice duration", "days of notice"
+        ]):
+            field_is_num = is_numeric
+            if inp is not None:
+                try:
+                    itype = (inp.get_attribute("type") or "").lower()
+                    imode = (inp.get_attribute("inputmode") or "").lower()
+                    if itype in ["number", "tel"] or imode in ["numeric", "decimal"]:
+                        field_is_num = True
+                except Exception:
+                    pass
+            wants_number = field_is_num or any(term in q for term in ["in days", "(days)", "number of days", "how many days", "days"])
+            if wants_number:
+                return str(self.screening_cfg.notice_period_days)
+            return self.screening_cfg.notice_period_text or f"{self.screening_cfg.notice_period_days} Days"
 
         # 3. Current / Expected CTC (smart auto-detection between LPA and full numbers)
         if any(term in q for term in ["ctc", "salary", "compensation", "remuneration", "package"]):
@@ -1113,7 +1188,8 @@ class EasyApplyFormFiller:
             question=question,
             field_type="numeric" if is_numeric else "text",
             candidate=self.cand,
-            ai_config=self.ai_cfg
+            ai_config=self.ai_cfg,
+            screening_answers=self.screening_cfg
         )
 
     def _match_option(self, targets: List[str], options: List[str]) -> Optional[str]:

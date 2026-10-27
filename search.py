@@ -1,7 +1,9 @@
 import time
 import urllib.parse
 import logging
-from typing import List, Optional
+import hashlib
+import re
+from typing import List, Optional, Set, Tuple
 from playwright.sync_api import Page
 from rich.console import Console
 
@@ -40,6 +42,10 @@ class LinkedInJobSearcher:
             ai_config=config.ai_fallback
         )
         self.form_filler = EasyApplyFormFiller(page, browser_mgr, config)
+        
+        # In-session deduplication across different search queries, pages, and locations
+        self.session_seen_job_ids: Set[str] = set()
+        self.session_seen_jobs: Set[Tuple[str, str]] = set()
 
     def run(self, roles: Optional[List[str]] = None, location: Optional[str] = None):
         """Runs the search and application loop across specified roles and locations."""
@@ -71,8 +77,9 @@ class LinkedInJobSearcher:
 
                 loc_label = "Remote (India)" if loc.lower() == "remote" else loc
                 console.print(f"\n[bold yellow]════════ Searching for: '{role}' in '{loc_label}' ════════[/bold yellow]")
-                search_url = self._build_search_url(role, loc)
                 
+                # Navigate to page 1
+                search_url = self._build_search_url(role, loc, start=0)
                 try:
                     self.page.goto(search_url, wait_until="domcontentloaded", timeout=30000)
                     self.browser_mgr.sleep(3.0, 5.0)
@@ -80,15 +87,15 @@ class LinkedInJobSearcher:
                     console.print(f"[red]Failed to load search page for '{role}' in '{loc_label}': {e}[/red]")
                     continue
 
-                # Process job cards on the page
-                apps_in_batch = self._process_search_results(role, max_apps - processed_this_session)
+                # Process job cards on the page (with multi-page navigation)
+                apps_in_batch = self._process_search_results(role, loc, max_apps - processed_this_session)
                 processed_this_session += apps_in_batch
 
         console.print(f"\n[bold green]🏁 Finished search run! Total processed this session: {processed_this_session}[/bold green]")
 
-    def _build_search_url(self, role: str, location: str) -> str:
-        """Constructs a targeted LinkedIn job search URL with Easy Apply filter enabled."""
-        base = "https://www.linkedin.com/jobs/search-results/?"
+    def _build_search_url(self, role: str, location: str, start: int = 0) -> str:
+        """Constructs a targeted LinkedIn job search URL with Easy Apply filter enabled and pagination start offset."""
+        base = "https://www.linkedin.com/jobs/search/?"
         
         is_remote_search = location.lower() == "remote"
         # When searching for remote jobs, target location="India" with f_WT=2 (Remote)
@@ -117,18 +124,30 @@ class LinkedInJobSearcher:
             exp_str = ",".join(str(lvl) for lvl in self.config.search.experience_levels)
             params["f_E"] = exp_str
 
+        # Pagination start offset (LinkedIn uses 25 items per page: page 1 = 0, page 2 = 25, page 3 = 50)
+        if start > 0:
+            params["start"] = str(start)
+
         return base + urllib.parse.urlencode(params)
 
-    def _process_search_results(self, role: str, remaining_quota: int) -> int:
-        """Iterates through job cards on the left panel, filters suitability, and applies."""
+    def _process_search_results(self, role: str, location: str, remaining_quota: int) -> int:
+        """Iterates through job cards on the left panel, filters suitability, and applies across multiple pages."""
         processed_count = 0
-        max_pages = 3
+        max_pages = 4  # Up to 100 jobs per role/location query
 
         for current_page in range(1, max_pages + 1):
             if processed_count >= remaining_quota:
                 break
 
-            # Scroll down the left job listing panel to trigger lazy loading of all job cards
+            console.print(f"\n[bold cyan]📄 Page {current_page} of search results for '{role}'...[/bold cyan]")
+
+            if current_page > 1:
+                nav_success = self._go_to_page(role, location, current_page)
+                if not nav_success:
+                    console.print(f"[yellow]Could not navigate to Page {current_page} or reached the end of results.[/yellow]")
+                    break
+
+            # Scroll down the left job listing panel to trigger lazy loading of all 25 job cards
             self._scroll_job_list()
 
             # Find job cards
@@ -139,13 +158,27 @@ class LinkedInJobSearcher:
                 console.print("[yellow]No more job cards found on this page.[/yellow]")
                 break
 
+            new_jobs_on_page = 0
+
             for idx, job in enumerate(job_cards):
                 if processed_count >= remaining_quota:
                     break
 
+                job_key = (job.title.lower().strip(), job.company.lower().strip())
+
+                # Session-level deduplication: Skip if seen earlier in this run
+                if job.job_id in self.session_seen_job_ids or (job.company != "Unknown" and job_key in self.session_seen_jobs):
+                    logger.debug(f"Skipping {job.title} at {job.company} (already seen in this session)")
+                    continue
+
+                self.session_seen_job_ids.add(job.job_id)
+                if job.company != "Unknown":
+                    self.session_seen_jobs.add(job_key)
+                new_jobs_on_page += 1
+
                 console.print(f"\n[bold]📋 Job:[/bold] [cyan]{job.title}[/cyan] at [green]{job.company}[/green] ({job.location})")
 
-                # Step 1: Quick Suitability Check (Title & Blacklist & History)
+                # Step 1: Quick Suitability Check (Title & Blacklist & DB History)
                 is_suitable, card_reason = self.suitability_filter.check_job_card(job)
                 if not is_suitable:
                     console.print(f"  [dim]⏭️  Skipping: {card_reason}[/dim]")
@@ -161,9 +194,12 @@ class LinkedInJobSearcher:
                     ))
                     continue
 
-                # Step 2: Click job card to view detail panel on the right
+                # Step 2: Click job card to view detail panel on the right and resolve exact job ID
                 self._click_job_card(job, idx)
                 self.browser_mgr.sleep(1.5, 3.0)
+
+                # Ensure exact numeric ID is also marked seen in session
+                self.session_seen_job_ids.add(job.job_id)
 
                 # Step 3: Deep check of job description text
                 desc_text = self._get_job_description_text()
@@ -200,23 +236,83 @@ class LinkedInJobSearcher:
                     console.print(f"  [yellow]Notice:[/yellow] {result.status} - {result.reason}")
                     self.browser_mgr.sleep(2.0, 4.0)
 
-            # Check next page button if more quota needed
-            if processed_count < remaining_quota:
-                has_next = self._click_next_page(current_page + 1)
-                if not has_next:
-                    break
-                self.browser_mgr.sleep(3.0, 5.0)
+            # If an entire page had 0 new jobs, we've likely seen them all or hit pagination boundary
+            if new_jobs_on_page == 0 and len(job_cards) > 0:
+                console.print(f"[dim]All {len(job_cards)} jobs on page {current_page} were already processed earlier in this session.[/dim]")
 
         return processed_count
 
-    def _collect_job_cards(self) -> List[JobCard]:
-        """Finds all visible job card elements in the left panel and extracts metadata."""
-        import hashlib
-        import re
+    def _go_to_page(self, role: str, location: str, page_num: int) -> bool:
+        """
+        Navigates to the specified page (1-indexed) by clicking the pagination button
+        or using direct LinkedIn URL offset navigation (start=(page_num-1)*25).
+        """
+        # Step 1: Scroll to the bottom of the list to reveal the pagination controls
+        try:
+            container = self.page.locator(".jobs-search-results-list, .scaffold-layout__list").first
+            if container.count() > 0 and container.is_visible():
+                container.evaluate("el => el.scrollTop = el.scrollHeight")
+            else:
+                self.page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+            self.browser_mgr.sleep(1.0, 2.0)
+        except Exception:
+            pass
 
+        # Step 2: Attempt clicking page button inside LinkedIn's pagination controls
+        page_btn_selectors = [
+            f"li[data-test-pagination-page-btn='{page_num}'] button",
+            f".artdeco-pagination__pages button[aria-label='Page {page_num}']",
+            f".jobs-search-results-list__pagination button[aria-label='Page {page_num}']",
+            f"button.artdeco-pagination__indicator--number[aria-label='Page {page_num}']",
+            f"button[aria-label='Page {page_num}']",
+            f".artdeco-pagination__button--next:not([disabled])",
+            f".jobs-search-results-list__pagination button[aria-label='Next']:not([disabled])"
+        ]
+
+        clicked = False
+        for sel in page_btn_selectors:
+            btn = self.page.locator(sel).first
+            if btn.count() > 0 and btn.is_visible():
+                try:
+                    btn.scroll_into_view_if_needed()
+                    btn.click()
+                    clicked = True
+                    self.browser_mgr.sleep(3.0, 5.0)
+                    break
+                except Exception as e:
+                    logger.debug(f"Could not click pagination button '{sel}': {e}")
+
+        # If button click loaded new unseen jobs, return success
+        if clicked:
+            self._scroll_job_list()
+            cards = self._collect_job_cards()
+            unseen = [c for c in cards if c.job_id not in self.session_seen_job_ids]
+            if unseen:
+                return True
+
+        # Step 3: Reliable URL-based offset pagination fallback (start=25, 50, etc.)
+        start_offset = (page_num - 1) * 25
+        page_url = self._build_search_url(role, location, start=start_offset)
+        console.print(f"[cyan]Navigating to Page {page_num} via URL (start={start_offset})...[/cyan]")
+        try:
+            self.page.goto(page_url, wait_until="domcontentloaded", timeout=30000)
+            self.browser_mgr.sleep(3.0, 5.0)
+            self._scroll_job_list()
+            cards = self._collect_job_cards()
+            if cards:
+                return True
+            else:
+                console.print(f"[yellow]No job cards returned on Page {page_num}. End of results reached.[/yellow]")
+                return False
+        except Exception as e:
+            console.print(f"[red]Failed to navigate to Page {page_num}: {e}[/red]")
+            return False
+
+    def _collect_job_cards(self) -> List[JobCard]:
+        """Finds all visible job card elements in the left panel and extracts metadata with accurate job IDs."""
         cards = []
 
-        # Strategy 1: Modern 2026 AI-search layout (div[role="button"] cards in left rail)
+        # Strategy 1: Modern 2026 search layout (div[role="button"] cards in left rail)
         modern_locators = self.page.locator("div[role='button']").filter(has_text="Easy Apply")
         modern_count = modern_locators.count()
 
@@ -247,8 +343,41 @@ class LinkedInJobSearcher:
                             location = line
                             break
 
-                    # Deterministic hash ID
-                    job_id = hashlib.md5(f"{title}_{company}_{i}".encode()).hexdigest()[:10]
+                    # Extract real LinkedIn numeric Job ID if available
+                    job_id = (
+                        item.get_attribute("data-job-id") or
+                        item.get_attribute("data-occludable-job-id") or ""
+                    )
+
+                    if not job_id:
+                        try:
+                            links = item.locator("a[href*='/jobs/view/'], a[href*='currentJobId=']").all()
+                            for link in links:
+                                href = link.get_attribute("href") or ""
+                                m = re.search(r"/(?:jobs/view/|currentJobId=)(\d+)", href)
+                                if m:
+                                    job_id = m.group(1)
+                                    break
+                        except Exception:
+                            pass
+
+                    if not job_id:
+                        try:
+                            urn = item.get_attribute("data-entity-urn") or item.get_attribute("data-chameleon-result-urn") or ""
+                            if not urn:
+                                urn_elem = item.locator("[data-entity-urn]").first
+                                if urn_elem.count() > 0:
+                                    urn = urn_elem.get_attribute("data-entity-urn") or ""
+                            m = re.search(r"jobPosting:(\d+)", urn)
+                            if m:
+                                job_id = m.group(1)
+                        except Exception:
+                            pass
+
+                    # Stable fallback hash based purely on (title, company) WITHOUT index {i}
+                    if not job_id:
+                        norm_key = f"{title.lower().strip()}_{company.lower().strip()}"
+                        job_id = f"card_{hashlib.md5(norm_key.encode()).hexdigest()[:12]}"
 
                     cards.append(JobCard(
                         job_id=job_id,
@@ -279,7 +408,11 @@ class LinkedInJobSearcher:
 
                     if not job_id:
                         m = re.search(r"/view/(\d+)", job_url)
-                        job_id = m.group(1) if m else str(int(time.time() * 1000) + i)
+                        job_id = m.group(1) if m else None
+
+                    if not job_id:
+                        norm_key = f"{title.lower().strip()}_{company.lower().strip()}"
+                        job_id = f"card_{hashlib.md5(norm_key.encode()).hexdigest()[:12]}"
 
                     comp_elem = item.locator(".job-card-container__primary-description, .artdeco-entity-lockup__subtitle").first
                     company = comp_elem.inner_text().strip() if comp_elem.count() > 0 else "Unknown"
@@ -298,7 +431,7 @@ class LinkedInJobSearcher:
                 except Exception as e:
                     logger.debug(f"Error parsing classic job card {i}: {e}")
 
-        # Deduplicate
+        # Deduplicate within the page
         seen = set()
         deduped = []
         for c in cards:
@@ -309,8 +442,6 @@ class LinkedInJobSearcher:
 
     def _click_job_card(self, job: JobCard, index: int):
         """Clicks the job card item to display details in right pane and resolves currentJobId."""
-        import re
-
         # Strategy 1: Modern layout card click by index
         modern_cards = self.page.locator("div[role='button']").filter(has_text="Easy Apply")
         if modern_cards.count() > index:
@@ -320,7 +451,7 @@ class LinkedInJobSearcher:
                 target.click()
                 self.browser_mgr.sleep(1.5, 2.5)
 
-                # Extract exact job ID from URL
+                # Extract exact numeric job ID from URL
                 m = re.search(r"currentJobId=(\d+)", self.page.url)
                 if m:
                     job.job_id = m.group(1)
@@ -335,26 +466,29 @@ class LinkedInJobSearcher:
             try:
                 card.first.scroll_into_view_if_needed()
                 card.first.click()
+                self.browser_mgr.sleep(1.5, 2.5)
+                m = re.search(r"currentJobId=(\d+)", self.page.url)
+                if m:
+                    job.job_id = m.group(1)
+                    job.job_url = f"https://www.linkedin.com/jobs/view/{job.job_id}/"
             except Exception:
                 pass
 
     def _scroll_job_list(self):
-        """Smoothly scrolls the jobs list container down to trigger lazy rendering."""
-        # Check classic container
-        container = self.page.locator(".jobs-search-results-list, .scaffold-layout__list").first
-        if container.count() > 0 and container.is_visible():
-            for _ in range(3):
-                self.browser_mgr.human_scroll(container, distance=400)
-                time.sleep(0.3)
-        else:
-            # Modern layout: scroll the left pane
-            cards = self.page.locator("div[role='button']").filter(has_text="Easy Apply")
-            if cards.count() > 0:
-                try:
-                    last_card = cards.last
-                    last_card.scroll_into_view_if_needed()
-                except Exception:
-                    pass
+        """Smoothly scrolls the jobs list container down to trigger lazy rendering of all 25 cards."""
+        container = self.page.locator(".jobs-search-results-list, .scaffold-layout__list, ul.jobs-search-results__list").first
+        is_container_valid = container.count() > 0 and container.is_visible()
+
+        # Step-scroll through the height of the left rail (~3600px to reach all 25 jobs)
+        for _ in range(7):
+            if is_container_valid:
+                self.browser_mgr.human_scroll(container, distance=450)
+            else:
+                self.page.mouse.wheel(0, 450)
+            time.sleep(0.35)
+
+        # Allow lazy DOM elements and pagination bar to finish rendering
+        time.sleep(0.8)
 
     def _get_job_description_text(self) -> str:
         """Extracts text content from the right pane's job description area."""
@@ -376,7 +510,7 @@ class LinkedInJobSearcher:
                     return classic.innerText.trim();
                 }
 
-                // Modern 2026 search: Find heading strictly containing 'About the job'
+                // Modern search: Find heading strictly containing 'About the job'
                 const headings = Array.from(document.querySelectorAll('h1, h2, h3, h4, h5, h6, strong'));
                 for (const h of headings) {
                     const txt = (h.innerText || '').trim().toLowerCase();
@@ -384,7 +518,6 @@ class LinkedInJobSearcher:
                         let cur = h.parentElement;
                         while (cur && cur.tagName !== 'BODY') {
                             const len = (cur.innerText || '').trim().length;
-                            // The actual JD section is typically between 150 and 6000 chars
                             if (len > 100 && len < 6000) {
                                 return cur.innerText.trim();
                             }
@@ -407,14 +540,3 @@ class LinkedInJobSearcher:
             logger.debug(f"Error extracting JD: {e}")
 
         return ""
-
-    def _click_next_page(self, page_num: int) -> bool:
-        """Finds and clicks the pagination button for the next page."""
-        btn = self.page.locator(f"button[aria-label='Page {page_num}'], button[aria-label='Next']")
-        if btn.count() > 0 and btn.first.is_visible():
-            try:
-                btn.first.click()
-                return True
-            except Exception:
-                return False
-        return False

@@ -25,10 +25,18 @@ class JobSuitabilityFilter:
         Returns (is_suitable, reason).
         """
         # 1. Already processed / applied check
-        if self.tracker.is_already_applied(job.job_id):
-            return False, f"Already applied or processed earlier (ID: {job.job_id})"
+        if self.tracker.is_already_applied(job.job_id, job.title, job.company):
+            return False, f"Already applied or processed earlier ({job.title} at {job.company} - ID: {job.job_id})"
 
-        # 2. Company blacklist check
+        # 2. Excluded title keywords check (e.g. Odoo, Salesforce, PHP, Flutter, QA)
+        if getattr(self.cfg, "exclude_title_keywords", None):
+            lower_title = job.title.lower()
+            for kw in self.cfg.exclude_title_keywords:
+                pattern = rf"\b{re.escape(kw.lower())}\b"
+                if re.search(pattern, lower_title):
+                    return False, f"Job title '{job.title}' contains excluded keyword '{kw}'"
+
+        # 3. Company blacklist check
         lower_company = job.company.lower().strip()
         blacklist = list(self.cfg.company_blacklist)
         if self.candidate and getattr(self.candidate, "current_company", None):
@@ -52,7 +60,7 @@ class JobSuitabilityFilter:
             elif b in lower_company:
                 return False, f"Company '{job.company}' matches blacklist filter '{blacklisted}'"
 
-        # 3. Seniority exclusion in title
+        # 4. Seniority exclusion in title
         if self.cfg.exclude_senior_titles:
             lower_title = job.title.lower()
             for keyword in self.cfg.senior_keywords:

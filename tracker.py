@@ -32,15 +32,29 @@ class ApplicationTracker:
             """)
             conn.commit()
 
-    def is_already_applied(self, job_id: str) -> bool:
-        """Returns True if the job has already been processed or applied to."""
+    def is_already_applied(self, job_id: str, title: Optional[str] = None, company: Optional[str] = None) -> bool:
+        """Returns True if the job has already been processed or applied to (checked by ID and title+company)."""
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.cursor()
-            cursor.execute(
-                "SELECT status FROM applications WHERE job_id = ? AND status IN ('applied', 'dry_run_success')",
-                (job_id,)
-            )
-            return cursor.fetchone() is not None
+            # 1. Match by job_id
+            if job_id:
+                cursor.execute(
+                    "SELECT status FROM applications WHERE job_id = ? AND status IN ('applied', 'dry_run_success')",
+                    (str(job_id),)
+                )
+                if cursor.fetchone() is not None:
+                    return True
+
+            # 2. Match by normalized (title, company)
+            if title and company and company.strip().lower() != "unknown":
+                cursor.execute(
+                    "SELECT status FROM applications WHERE LOWER(TRIM(title)) = LOWER(TRIM(?)) AND LOWER(TRIM(company)) = LOWER(TRIM(?)) AND status IN ('applied', 'dry_run_success')",
+                    (title.strip(), company.strip())
+                )
+                if cursor.fetchone() is not None:
+                    return True
+
+            return False
 
     def record_application(self, result: ApplicationResult):
         """Records or updates the result of an application attempt."""

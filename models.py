@@ -57,6 +57,7 @@ class SuitabilityFilterConfig(BaseModel):
     max_years_required: int = 3
     exclude_senior_titles: bool = True
     senior_keywords: List[str] = Field(default_factory=list)
+    exclude_title_keywords: List[str] = Field(default_factory=list)
     company_blacklist: List[str] = Field(default_factory=list)
     enforce_location: bool = True
     allowed_locations: List[str] = Field(default_factory=lambda: ["Bengaluru", "Bangalore", "Karnataka"])

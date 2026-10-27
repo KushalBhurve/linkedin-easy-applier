@@ -3,7 +3,7 @@ import json
 from typing import List, Optional, Any, Dict, Tuple
 import requests
 
-from models import AIFallbackConfig, CandidateConfig
+from models import AIFallbackConfig, CandidateConfig, ScreeningAnswersConfig
 
 logger = logging.getLogger("linkedin_easy_applier.llm")
 
@@ -12,15 +12,17 @@ Candidate Background:
 - Full Name: {full_name}
 - Current Title: {current_title} ({current_company})
 - Overall Experience: {overall_experience_years} years
+- Notice Period: {notice_period_days} days ({notice_period_text}). Note: Candidate is currently employed at {current_company} and must serve a strict 60-day notice period. Candidate CANNOT join immediately.
 - Education: {highest_education} in {major} from {university} (GPA: {gpa})
 - Location: {city}, {state}, {country}
 - Key Skills: Python, AI/GenAI, RAG, LangGraph, LangChain, GCP, Cloud Run, Java, Spring Boot, Node.js, SQL, Docker.
 
 CRITICAL INSTRUCTIONS:
 1. Provide ONLY the final concise answer requested. Do NOT include any explanations, markdown, or commentary.
-2. For numeric fields (years of experience, notice period, CTC): Output ONLY a clean single number (e.g., '2' or '30' or '12').
-3. For boolean/radio questions: Output ONLY 'Yes' or 'No'.
-4. For multiple choice / dropdown questions: Output EXACTLY one of the provided options word-for-word.
+2. For numeric fields (years of experience, notice period, CTC): Output ONLY a clean single number (e.g., '2' or '60' or '16').
+3. For questions about notice period, joining date, or availability to join: Output '60' for numeric fields or '60 Days' for text fields. NEVER answer 'Immediately' or 'Immediate'. If asked whether available immediately or within 30 days as a Yes/No question, output 'No'.
+4. For boolean/radio questions: Output ONLY 'Yes' or 'No'.
+5. For multiple choice / dropdown questions: Output EXACTLY one of the provided options word-for-word.
 """
 
 def answer_screening_question(
@@ -28,7 +30,8 @@ def answer_screening_question(
     field_type: str,  # 'numeric', 'boolean', 'choice', 'text'
     options: Optional[List[str]] = None,
     candidate: Optional[CandidateConfig] = None,
-    ai_config: Optional[AIFallbackConfig] = None
+    ai_config: Optional[AIFallbackConfig] = None,
+    screening_answers: Optional[ScreeningAnswersConfig] = None
 ) -> str:
     """
     Uses an LLM (Ollama or Groq) to intelligently generate a truthful, high-quality answer
@@ -43,6 +46,8 @@ def answer_screening_question(
         "current_title": candidate.current_title if candidate else "AI & Platform Engineer",
         "current_company": candidate.current_company if candidate else "TCS",
         "overall_experience_years": candidate.overall_experience_years if candidate else 2.0,
+        "notice_period_days": screening_answers.notice_period_days if screening_answers else 60,
+        "notice_period_text": screening_answers.notice_period_text if screening_answers else "60 Days",
         "highest_education": candidate.highest_education if candidate else "Bachelor's Degree",
         "major": candidate.major if candidate else "Computer Science",
         "university": candidate.university if candidate else "Atria Institute of Technology",
@@ -144,9 +149,13 @@ def _clean_llm_response(raw: str, field_type: str, options: Optional[List[str]])
 
 def _fallback_default(field_type: str, options: Optional[List[str]], candidate: Optional[CandidateConfig]) -> str:
     if options and len(options) > 0:
-        # Check for standard positive options
+        # Check if this is a notice period question and match 60 days/2 months
         for opt in options:
-            if opt.lower() in ["yes", "authorized", "bachelor's", "immediate", "full-time", "professional"]:
+            if opt.strip().lower() in ["60 days", "60 day", "60", "2 months", "30-60 days", "60-90 days", "more than 30 days"]:
+                return opt
+        # Check for standard positive options (excluding 'immediate')
+        for opt in options:
+            if opt.lower() in ["yes", "authorized", "bachelor's", "full-time", "professional"]:
                 return opt
         return options[0]
         

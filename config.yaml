@@ -7,16 +7,16 @@ candidate:
   first_name: "Kushal"
   last_name: "B R"
   full_name: "Kushal B R"
-  email: "kushal@example.com"             # Update with your active email
-  phone_country_code: "+91"               # Country dial code (e.g., +91 for India, +1 for US)
-  phone: "9876543210"                     # Update with your contact phone
+  email: "kushalbhurve@gmail.com"         # Real email from Resume.pdf
+  phone_country_code: "+91"               # Country dial code
+  phone: "7259119597"                     # Real contact phone from Resume.pdf
   city: "Bengaluru"
   state: "Karnataka"
   country: "India"
   postal_code: "560001"
-  linkedin_url: "https://www.linkedin.com/in/kushalbr"
-  github_url: "https://github.com/kushalbr"
-  portfolio_url: ""
+  linkedin_url: "https://www.linkedin.com/in/kushal-b-r-b4342728a/"
+  github_url: "https://github.com/KushalBhurve"
+  portfolio_url: "https://kushalbhurve.in"
   current_title: "AI & Platform Engineer"
   current_company: "TCS"
   overall_experience_years: 2
@@ -26,7 +26,7 @@ candidate:
   gpa: "8.5"
 
   # Path to your PDF resume (relative to linkedin_easy_applier directory or absolute)
-  resume_path: "resume.pdf"
+  resume_path: "Resume.pdf"
 
   # Skill Experience Mapping (Used to accurately answer: "How many years of X experience do you have?")
   skills_experience:
@@ -83,7 +83,7 @@ screening_answers:
   willing_to_relocate: "Yes"            # Are you willing to relocate?
   comfort_with_commute: "Yes"           # Are you able to commute to office / work hybrid?
   notice_period_days: 60               # Notice period in days (e.g. 0, 15, 30, 60, 90)
-  notice_period_text: "60 Days"         # Text notice period (e.g., "Immediate", "30 Days")
+  notice_period_text: "60 Days"         # Text notice period (e.g."60 Days")
 
   # Compensation (Adjust to your target preferences)
   current_ctc_lpa: "10"                  # Current CTC in LPA (e.g., 10)
@@ -99,38 +99,16 @@ screening_answers:
 
 # Job Search Filter Settings
 search:
-  # Target roles to search on LinkedIn
+  # Target roles tailored strictly to Kushal's GenAI / LLM / AI Engineering resume
   roles:
-  # User's Original Roles
-  # - "AI Engineer"
-  # - "GenAI Engineer"
-  # - "AI Developer"
-  - "Python Developer"
-  - "Backend Developer"
-  - "SDE 1"
-  - "Software Engineer"
-  
-  # Expanded AI & Data Roles
-  - "Machine Learning Engineer"
-  - "MLOps Engineer"
-  - "LLM Engineer"
-  - "NLP Engineer"
-  - "Prompt Engineer"
-  - "Data Engineer"
-  
-  # Expanded Cloud & Backend Roles
-  - "Platform Engineer"
-  - "Cloud Engineer"
-  - "API Developer"
-  - "Java Developer"
-  - "Node.js Developer"
-  
-  # Expanded Full Stack & General Roles
-  - "Full Stack Developer"
-  - "Full Stack Engineer"
-  - "Junior Software Engineer"
-  - "Graduate Software Engineer"
-  - "Software Development Engineer"
+    - "AI Engineer"
+    - "GenAI Engineer"
+    - "Generative AI Engineer"
+    - "AI Developer"
+    - "LLM Engineer"
+    - "Machine Learning Engineer"
+    - "Python Developer"
+    - "Agentic AI Engineer"
 
   # Target locations to search on LinkedIn: focuses on Bengaluru and Remote
   locations:
@@ -174,6 +152,36 @@ suitability_filter:
     - "specialist iii"
     - "engineer iii"
 
+  # Exclude non-matching domains/stacks to avoid misaligned applications
+  exclude_title_keywords:
+    - "odoo"
+    - "php"
+    - "wordpress"
+    - "salesforce"
+    - "c#"
+    - ".net"
+    - "dotnet"
+    - "embedded"
+    - "frontend"
+    - "front-end"
+    - "ui/ux"
+    - "android"
+    - "ios"
+    - "flutter"
+    - "react native"
+    - "qa"
+    - "test"
+    - "tester"
+    - "testing"
+    - "manual"
+    - "automation tester"
+    - "sdet"
+    - "devops"
+    - "tableau"
+    - "power bi"
+    - "sap"
+    - "scrum"
+
   company_blacklist:
     - "CyberCoders"
     - "Revature"
@@ -181,6 +189,11 @@ suitability_filter:
     - "Tata Consultancy Services"
     - "TCS"
     - "Tata Consultancy"
+    - "Turing"
+    - "Recro"
+    - "JobGether"
+    - "TalentRabbit"
+    - "Weekday"
 
   # Location filter: Restricts applications to Bangalore or Remote roles
   enforce_location: true
@@ -207,7 +220,7 @@ execution:
   delay_between_jobs_sec: 12.0
 
   # Max applications to process per session (LinkedIn safety limit recommended: <= 25/day)
-  max_applications_per_run: 15
+  max_applications_per_run: 50
 
   # Save screenshots of completed forms in results/screenshots
   save_screenshots: true
